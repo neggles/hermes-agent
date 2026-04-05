@@ -164,3 +164,8 @@ target-version = "py312"
 
 [tool.ruff.format]
 skip-magic-trailing-comma = false
+
+[tool.ruff.lint]
+ignore = [
+  "E402", # we have way too many non-module-level imports not at the top at the moment
+]
