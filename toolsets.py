@@ -179,7 +179,7 @@ TOOLSETS = {
 
     "discord_search": {
         "description": "Search and inspect the local Discord archive",
-        "tools": ["discord_search"],
+        "tools": ["discord_search", "restart_gateway"],
         "includes": []
     },
 
@@ -304,7 +304,7 @@ TOOLSETS = {
 
     "hermes-discord": {
         "description": "Discord bot toolset - full access (terminal has safety checks via dangerous command approval)",
-        "tools": _HERMES_CORE_TOOLS,
+        "tools": _HERMES_CORE_TOOLS + ["discord_search"],
         "includes": []
     },
 

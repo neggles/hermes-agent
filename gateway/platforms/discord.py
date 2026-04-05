@@ -780,6 +780,41 @@ class DiscordAdapter(BasePlatformAdapter):
             await self._remove_reaction(message, "👀")
             await self._add_reaction(message, "✅" if success else "❌")
 
+    async def _resolve_channel(self, chat_id: str) -> discord.TextChannel | discord.Thread | discord.DMChannel | None:
+        """Resolve a chat_id to a Discord channel.
+
+        Handles:
+        - Regular channel IDs
+        - Thread IDs
+        - User IDs (creates DM channel if needed)
+        """
+        if not self._client:
+            return None
+
+        try:
+            # First try as a regular channel/thread
+            channel = self._client.get_channel(int(chat_id))
+            if channel:
+                return channel
+
+            try:
+                channel = await self._client.fetch_channel(int(chat_id))
+                if channel:
+                    return channel
+            except discord.NotFound:
+                pass  # Not a channel, might be a user ID for DM
+
+            # Try as a user ID for DM
+            user = self._client.get_user(int(chat_id))
+            if not user:
+                user = await self._client.fetch_user(int(chat_id))
+            if user:
+                return await user.create_dm()
+
+            return None
+        except (ValueError, discord.DiscordException):
+            return None
+
     async def send(
         self,
         chat_id: str,
@@ -787,19 +822,16 @@ class DiscordAdapter(BasePlatformAdapter):
         reply_to: Optional[str] = None,
         metadata: Optional[dict[str, Any]] = None,
     ) -> SendResult:
-        """Send a message to a Discord channel."""
+        """Send a message to a Discord channel or DM."""
         if not self._client:
             return SendResult(success=False, error="Not connected")
 
+        # Resolve the channel (handles both channel IDs and user IDs for DMs)
+        channel = await self._resolve_channel(chat_id)
+        if not channel:
+            return SendResult(success=False, error=f"Could not resolve channel {chat_id}")
+
         try:
-            # Get the channel
-            channel = self._client.get_channel(int(chat_id))
-            if not channel:
-                channel = await self._client.fetch_channel(int(chat_id))
-
-            if not channel:
-                return SendResult(success=False, error=f"Channel {chat_id} not found")
-
             # Format and split message if needed
             formatted = self.format_message(content)
             chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
