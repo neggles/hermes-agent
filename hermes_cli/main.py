@@ -3821,6 +3821,27 @@ For more help on a command:
     # gateway setup
     gateway_setup = gateway_subparsers.add_parser("setup", help="Configure messaging platforms")
 
+    gateway_archive_status = gateway_subparsers.add_parser(
+        "archive-status",
+        help="Show Discord archive/backfill status",
+    )
+    gateway_archive_status.add_argument(
+        "--limit",
+        type=int,
+        default=20,
+        help="Maximum number of channel states to show",
+    )
+    gateway_archive_status.add_argument(
+        "--all",
+        action="store_true",
+        help="Include completed channels in the listing",
+    )
+    gateway_archive_status.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit machine-readable JSON",
+    )
+
     gateway_parser.set_defaults(func=cmd_gateway)
     
     # =========================================================================

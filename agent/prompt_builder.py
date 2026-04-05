@@ -214,7 +214,9 @@ PLATFORM_HINTS = {
         "You can send media files natively: include MEDIA:/absolute/path/to/file "
         "in your response. Images (.png, .jpg, .webp) are sent as photo "
         "attachments, audio as file attachments. You can also include image URLs "
-        "in markdown format ![alt](url) and they will be sent as attachments."
+        "in markdown format ![alt](url) and they will be sent as attachments. "
+        "When the discord_search tool is available, use it to search archived "
+        "Discord history instead of guessing from memory."
     ),
     "slack": (
         "You are in a Slack workspace communicating with your user. "

@@ -5,6 +5,7 @@ Handles: hermes gateway [run|start|stop|restart|status|install|uninstall|setup]
 """
 
 import asyncio
+import json
 import os
 import shutil
 import signal
@@ -92,7 +93,7 @@ def kill_gateway_processes(force: bool = False) -> int:
     """Kill any running gateway processes. Returns count killed."""
     pids = find_gateway_pids()
     killed = 0
-    
+
     for pid in pids:
         try:
             if force and not is_windows():
@@ -105,7 +106,7 @@ def kill_gateway_processes(force: bool = False) -> int:
             pass
         except PermissionError:
             print(f"⚠ Permission denied to kill PID {pid}")
-    
+
     return killed
 
 
@@ -443,7 +444,7 @@ def get_hermes_cli_path() -> str:
     hermes_bin = shutil.which("hermes")
     if hermes_bin:
         return hermes_bin
-    
+
     # Fallback to direct module execution
     return f"{get_python_path()} -m hermes_cli.main"
 
@@ -841,7 +842,7 @@ def generate_launchd_plist() -> str:
 <dict>
     <key>Label</key>
     <string>{label}</string>
-    
+
     <key>ProgramArguments</key>
     <array>
         <string>{python_path}</string>
@@ -851,10 +852,10 @@ def generate_launchd_plist() -> str:
         <string>run</string>
         <string>--replace</string>
     </array>
-    
+
     <key>WorkingDirectory</key>
     <string>{working_dir}</string>
-    
+
     <key>EnvironmentVariables</key>
     <dict>
         <key>PATH</key>
@@ -864,19 +865,19 @@ def generate_launchd_plist() -> str:
         <key>HERMES_HOME</key>
         <string>{hermes_home}</string>
     </dict>
-    
+
     <key>RunAtLoad</key>
     <true/>
-    
+
     <key>KeepAlive</key>
     <dict>
         <key>SuccessfulExit</key>
         <false/>
     </dict>
-    
+
     <key>StandardOutPath</key>
     <string>{log_dir}/gateway.log</string>
-    
+
     <key>StandardErrorPath</key>
     <string>{log_dir}/gateway.error.log</string>
 </dict>
@@ -915,7 +916,7 @@ def refresh_launchd_plist_if_needed() -> bool:
 
 def launchd_install(force: bool = False):
     plist_path = get_launchd_plist_path()
-    
+
     if plist_path.exists() and not force:
         if not launchd_plist_is_current():
             print(f"↻ Repairing outdated launchd service at: {plist_path}")
@@ -925,13 +926,13 @@ def launchd_install(force: bool = False):
         print(f"Service already installed at: {plist_path}")
         print("Use --force to reinstall")
         return
-    
+
     plist_path.parent.mkdir(parents=True, exist_ok=True)
     print(f"Installing launchd service to: {plist_path}")
     plist_path.write_text(generate_launchd_plist())
-    
+
     subprocess.run(["launchctl", "load", str(plist_path)], check=True)
-    
+
     print()
     print("✓ Service installed and loaded!")
     print()
@@ -943,11 +944,11 @@ def launchd_install(force: bool = False):
 def launchd_uninstall():
     plist_path = get_launchd_plist_path()
     subprocess.run(["launchctl", "unload", str(plist_path)], check=False)
-    
+
     if plist_path.exists():
         plist_path.unlink()
         print(f"✓ Removed {plist_path}")
-    
+
     print("✓ Service uninstalled")
 
 def launchd_start():
@@ -1045,7 +1046,7 @@ def launchd_status(deep: bool = False):
     else:
         print("⚠ Service definition is stale relative to the current Hermes install")
         print("  Run: hermes gateway start")
-    
+
     if result.returncode == 0:
         print("✓ Gateway service is loaded")
         print(result.stdout)
@@ -1053,7 +1054,7 @@ def launchd_status(deep: bool = False):
         print("✗ Gateway service is not loaded")
         print("  Service definition exists locally but launchd has not loaded it.")
         print("  Run: hermes gateway start")
-    
+
     if deep:
         log_file = get_hermes_home() / "logs" / "gateway.log"
         if log_file.exists():
@@ -1068,7 +1069,7 @@ def launchd_status(deep: bool = False):
 
 def run_gateway(verbose: bool = False, replace: bool = False):
     """Run the gateway in foreground.
-    
+
     Args:
         verbose: Enable verbose logging output.
         replace: If True, kill any existing gateway instance before starting.
@@ -1076,9 +1077,9 @@ def run_gateway(verbose: bool = False, replace: bool = False):
                  hasn't fully exited yet.
     """
     sys.path.insert(0, str(PROJECT_ROOT))
-    
+
     from gateway.run import start_gateway
-    
+
     print("┌─────────────────────────────────────────────────────────┐")
     print("│           ⚕ Hermes Gateway Starting...                 │")
     print("├─────────────────────────────────────────────────────────┤")
@@ -1086,7 +1087,7 @@ def run_gateway(verbose: bool = False, replace: bool = False):
     print("│  Press Ctrl+C to stop                                   │")
     print("└─────────────────────────────────────────────────────────┘")
     print()
-    
+
     # Exit with code 1 if gateway fails to connect any platform,
     # so systemd Restart=on-failure will retry on transient errors
     success = asyncio.run(start_gateway(replace=replace))
@@ -1860,7 +1861,7 @@ def gateway_setup():
 def gateway_command(args):
     """Handle gateway subcommands."""
     subcmd = getattr(args, 'gateway_command', None)
-    
+
     # Default to run if no subcommand
     if subcmd is None or subcmd == "run":
         verbose = getattr(args, 'verbose', False)
@@ -1870,6 +1871,57 @@ def gateway_command(args):
 
     if subcmd == "setup":
         gateway_setup()
+        return
+
+    if subcmd == "archive-status":
+        from gateway.platforms.discord_archive import DiscordArchiveDB
+
+        db = DiscordArchiveDB()
+        try:
+            summary = db.get_backfill_summary()
+            rows = db.list_backfill_states(
+                limit=getattr(args, "limit", 20),
+                incomplete_only=not getattr(args, "all", False),
+            )
+        finally:
+            db.close()
+
+        if getattr(args, "json", False):
+            print(json.dumps({"summary": summary, "rows": rows}, ensure_ascii=False, default=str))
+            return
+
+        print()
+        print(color("┌─────────────────────────────────────────────────────────┐", Colors.CYAN))
+        print(color("│                 Discord Archive Status                  │", Colors.CYAN))
+        print(color("└─────────────────────────────────────────────────────────┘", Colors.CYAN))
+        print()
+        print(f"  Tracked channels:   {summary['tracked_channels']}")
+        print(f"  Complete channels:  {summary['complete_channels']}")
+        print(f"  Incomplete:         {summary['incomplete_channels']}")
+        print(f"  Archived channels:  {summary['enabled_channels']}")
+        print(f"  Archived messages:  {summary['archived_messages']}")
+        print()
+
+        if not rows:
+            if (
+                summary["tracked_channels"] > 0
+                and summary["incomplete_channels"] == 0
+                and not getattr(args, "all", False)
+            ):
+                print_info("No incomplete backfill states found. Use --all to show completed channels.")
+            else:
+                print_info("No persisted backfill state found.")
+            return
+
+        for row in rows:
+            status = color("complete", Colors.GREEN) if row["complete"] else color("pending", Colors.YELLOW)
+            print(f"  {row['channel_id']} ({row['channel_name'] or 'Unknown'}) [{status}]")
+            print(f"    Archived: {row['archived_message_count']}")
+            print(f"    Oldest ID: {row['oldest_message_id'] or '?'}")
+            print(f"    Oldest At: {row['oldest_created_at'] or '?'}")
+            print(f"    Latest Archived:   {row['latest_archived_at'] or '?'}")
+            print(f"    Updated:           {row['updated_at'] or '?'}")
+            print()
         return
 
     # Service management commands
@@ -1888,7 +1940,7 @@ def gateway_command(args):
             print("Service installation not supported on this platform.")
             print("Run manually: hermes gateway run")
             sys.exit(1)
-    
+
     elif subcmd == "uninstall":
         if is_managed():
             managed_error("uninstall gateway service (managed by NixOS)")
@@ -1901,7 +1953,7 @@ def gateway_command(args):
         else:
             print("Not supported on this platform.")
             sys.exit(1)
-    
+
     elif subcmd == "start":
         system = getattr(args, 'system', False)
         if is_linux():
@@ -1911,12 +1963,12 @@ def gateway_command(args):
         else:
             print("Not supported on this platform.")
             sys.exit(1)
-    
+
     elif subcmd == "stop":
         # Try service first, then sweep any stray/manual gateway processes.
         service_available = False
         system = getattr(args, 'system', False)
-        
+
         if is_linux() and (get_systemd_unit_path(system=False).exists() or get_systemd_unit_path(system=True).exists()):
             try:
                 systemd_stop(system=system)
@@ -1938,13 +1990,13 @@ def gateway_command(args):
                 print("✗ No gateway processes found")
         elif killed:
             print(f"✓ Stopped {killed} additional manual gateway process(es)")
-    
+
     elif subcmd == "restart":
         # Try service first, fall back to killing and restarting
         service_available = False
         system = getattr(args, 'system', False)
         service_configured = False
-        
+
         if is_linux() and (get_systemd_unit_path(system=False).exists() or get_systemd_unit_path(system=True).exists()):
             service_configured = True
             try:
@@ -1959,7 +2011,7 @@ def gateway_command(args):
                 service_available = True
             except subprocess.CalledProcessError:
                 pass
-        
+
         if not service_available:
             # systemd/launchd restart failed — check if linger is the issue
             if is_linux():
@@ -1994,11 +2046,11 @@ def gateway_command(args):
             # Start fresh
             print("Starting gateway...")
             run_gateway(verbose=False)
-    
+
     elif subcmd == "status":
         deep = getattr(args, 'deep', False)
         system = getattr(args, 'system', False)
-        
+
         # Check for service first
         if is_linux() and (get_systemd_unit_path(system=False).exists() or get_systemd_unit_path(system=True).exists()):
             systemd_status(deep, system=system)

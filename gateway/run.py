@@ -1211,6 +1211,7 @@ class GatewayRunner:
             logger.info("%s hook(s) loaded", hook_count)
         await self.hooks.emit("gateway:startup", {
             "platforms": [p.value for p in self.adapters.keys()],
+            "gateway": self,
         })
         
         if connected_count > 0:
@@ -5505,6 +5506,7 @@ class GatewayRunner:
             agent.stream_delta_callback = _stream_delta_cb
             agent.status_callback = _status_callback_sync
             agent.reasoning_config = reasoning_config
+            agent.session_source = source
 
             # Background review delivery — send "💾 Memory updated" etc. to user
             def _bg_review_send(message: str) -> None:

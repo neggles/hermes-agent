@@ -87,6 +87,7 @@ class SessionSource:
     user_id: Optional[str] = None
     user_name: Optional[str] = None
     thread_id: Optional[str] = None  # For forum topics, Discord threads, etc.
+    guild_id: Optional[str] = None  # For Discord guild-scoped chats
     chat_topic: Optional[str] = None  # Channel topic/description (Discord, Slack)
     user_id_alt: Optional[str] = None  # Signal UUID (alternative to phone number)
     chat_id_alt: Optional[str] = None  # Signal group internal ID
@@ -121,6 +122,7 @@ class SessionSource:
             "user_id": self.user_id,
             "user_name": self.user_name,
             "thread_id": self.thread_id,
+            "guild_id": self.guild_id,
             "chat_topic": self.chat_topic,
         }
         if self.user_id_alt:
@@ -139,6 +141,7 @@ class SessionSource:
             user_id=data.get("user_id"),
             user_name=data.get("user_name"),
             thread_id=data.get("thread_id"),
+            guild_id=data.get("guild_id"),
             chat_topic=data.get("chat_topic"),
             user_id_alt=data.get("user_id_alt"),
             chat_id_alt=data.get("chat_id_alt"),

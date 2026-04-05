@@ -255,6 +255,52 @@ class TestGatewaySystemServiceRouting:
 
         assert calls == [(False, False)]
 
+    def test_gateway_archive_status_prints_summary_and_rows(self, monkeypatch, capsys):
+        class FakeArchiveDB:
+            def get_backfill_summary(self):
+                return {
+                    "tracked_channels": 3,
+                    "complete_channels": 1,
+                    "incomplete_channels": 2,
+                    "archived_channels": 4,
+                    "archived_messages": 42,
+                }
+
+            def list_backfill_states(self, *, limit=20, incomplete_only=False):
+                assert limit == 5
+                assert incomplete_only is True
+                return [
+                    {
+                        "channel_id": 123,
+                        "complete": False,
+                        "archived_message_count": 10,
+                        "oldest_message_id": 111,
+                        "oldest_created_at": "2026-04-01T00:00:00+00:00",
+                        "earliest_archived_at": "2026-04-01T00:00:00+00:00",
+                        "latest_archived_at": "2026-04-04T00:00:00+00:00",
+                        "updated_at": "2026-04-04T12:00:00+00:00",
+                    }
+                ]
+
+            def close(self):
+                return None
+
+        import gateway.platforms.discord_archive as archive_mod
+
+        monkeypatch.setattr(archive_mod, "DiscordArchiveDB", FakeArchiveDB)
+
+        gateway_cli.gateway_command(
+            SimpleNamespace(gateway_command="archive-status", limit=5, all=False, json=False)
+        )
+
+        output = capsys.readouterr().out
+        assert "Discord Archive Status" in output
+        assert "Tracked channels:   3" in output
+        assert "Archived channels:  4" in output
+        assert "Archived messages:  42" in output
+        assert "123" in output
+        assert "Oldest ID: 111" in output
+
     def test_gateway_restart_does_not_fallback_to_foreground_when_launchd_restart_fails(self, tmp_path, monkeypatch):
         plist_path = tmp_path / "ai.hermes.gateway.plist"
         plist_path.write_text("plist\n", encoding="utf-8")

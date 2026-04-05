@@ -565,6 +565,7 @@ class AIAgent:
         self.quiet_mode = quiet_mode
         self.ephemeral_system_prompt = ephemeral_system_prompt
         self.platform = platform  # "cli", "telegram", "discord", "whatsapp", etc.
+        self.session_source: SessionSource | None = None
         # Pluggable print function — CLI replaces this with _cprint so that
         # raw ANSI status lines are routed through prompt_toolkit's renderer
         # instead of going directly to stdout where patch_stdout's StdoutProxy
@@ -5290,6 +5291,24 @@ class AIAgent:
                 db=self._session_db,
                 current_session_id=self.session_id,
             )
+        elif function_name == "discord_search":
+            from tools.discord_search_tool import discord_search_tool as _discord_search
+            return _discord_search(
+                mode=function_args.get("mode", "search"),
+                query=function_args.get("query", ""),
+                channel_id=function_args.get("channel_id"),
+                guild_id=function_args.get("guild_id"),
+                message_ids=function_args.get("message_ids"),
+                after_message_id=function_args.get("after_message_id"),
+                anchor_message_id=function_args.get("anchor_message_id"),
+                change_kind=function_args.get("change_kind", "all"),
+                limit=function_args.get("limit", 25),
+                around=function_args.get("around", 1),
+                include_bots=function_args.get("include_bots", False),
+                since=function_args.get("since"),
+                until=function_args.get("until"),
+                source=self.session_source,
+            )
         elif function_name == "memory":
             target = function_args.get("target", "memory")
             from tools.memory_tool import memory_tool as _memory_tool
@@ -5621,6 +5640,27 @@ class AIAgent:
                 tool_duration = time.time() - tool_start_time
                 if self.quiet_mode:
                     self._vprint(f"  {_get_cute_tool_message_impl('session_search', function_args, tool_duration, result=function_result)}")
+            elif function_name == "discord_search":
+                from tools.discord_search_tool import discord_search_tool as _discord_search
+                function_result = _discord_search(
+                    mode=function_args.get("mode", "search"),
+                    query=function_args.get("query", ""),
+                    channel_id=function_args.get("channel_id"),
+                    guild_id=function_args.get("guild_id"),
+                    message_ids=function_args.get("message_ids"),
+                    after_message_id=function_args.get("after_message_id"),
+                    anchor_message_id=function_args.get("anchor_message_id"),
+                    change_kind=function_args.get("change_kind", "all"),
+                    limit=function_args.get("limit", 25),
+                    around=function_args.get("around", 1),
+                    include_bots=function_args.get("include_bots", False),
+                    since=function_args.get("since"),
+                    until=function_args.get("until"),
+                    source=self.session_source,
+                )
+                tool_duration = time.time() - tool_start_time
+                if self.quiet_mode:
+                    self._vprint(f"  {_get_cute_tool_message_impl('discord_search', function_args, tool_duration, result=function_result)}")
             elif function_name == "memory":
                 target = function_args.get("target", "memory")
                 from tools.memory_tool import memory_tool as _memory_tool
