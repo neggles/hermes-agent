@@ -444,6 +444,15 @@ class DiscordArchiveDB:
             scrape_state.updated_at = datetime.now(tz=UTC)
             session.commit()
 
+    def get_channel_message_count(self, channel_id: int) -> int:
+        """Return count of archived messages for a channel."""
+        with self.sync_session() as session:
+            stmt = (
+                sa.select(sa.func.count(DiscordMessage.message_id))
+                .where(DiscordMessage.channel_id == channel_id)
+            )
+            return session.execute(stmt).scalar() or 0
+
     def get_oldest_message(self, channel_id: int) -> dict[str, Any] | None:
         """Return the oldest archived message metadata for one channel."""
         with self.sync_session() as session:

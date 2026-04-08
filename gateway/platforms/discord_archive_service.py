@@ -140,8 +140,12 @@ class DiscordArchiveConfig(BaseModel):
         default_factory=set,
         description="Optional allowlist of channel IDs to archive. If empty, all channels are included.",
     )
+    excluded_channel_ids: set[int] = Field(
+        default_factory=set,
+        description="Channel IDs to exclude from archiving. Takes priority over allowlists.",
+    )
 
-    @field_validator("allowed_guild_ids", "allowed_channel_ids", mode="before")
+    @field_validator("allowed_guild_ids", "allowed_channel_ids", "excluded_channel_ids", mode="before")
     @classmethod
     def _coerce_id_sets(cls, value: object) -> set[int]:
         if value in (None, "", []):
@@ -355,6 +359,10 @@ class DiscordArchiveService:
 
     def is_channel_allowed(self, channel: DiscordChannel | None) -> bool:
         if not channel:
+            return False
+
+        # Exclusion list takes priority
+        if self.config.excluded_channel_ids and channel.id in self.config.excluded_channel_ids:
             return False
 
         if not self.can_view_channel(channel):
@@ -603,7 +611,11 @@ class DiscordArchiveService:
         try:
             cursor = self.db.get_channel_cursor(channel.id)
             if cursor is None:
-                seeded = [m async for m in channel.history(limit=max(1, seed_limit), oldest_first=True)]
+                try:
+                    seeded = [m async for m in channel.history(limit=max(1, seed_limit), oldest_first=True)]
+                except discord.Forbidden:
+                    self._logger.debug("Channel %s: no permission to read history (Forbidden)", channel.id)
+                    return 0
                 for hist_msg in seeded:
                     self.db.upsert_message(self.message_to_archive_model(hist_msg))
                 return len(seeded)
@@ -612,7 +624,11 @@ class DiscordArchiveService:
             pages_left = None if drain_all_pages else max(1, int(max_pages))
             total = 0
             while True:
-                batch = [m async for m in channel.history(limit=100, oldest_first=True, after=after_obj)]
+                try:
+                    batch = [m async for m in channel.history(limit=100, oldest_first=True, after=after_obj)]
+                except discord.Forbidden:
+                    self._logger.debug("Channel %s: no permission to read history (Forbidden)", channel.id)
+                    return total
                 if not batch:
                     break
                 for hist_msg in batch:
@@ -654,7 +670,17 @@ class DiscordArchiveService:
         try:
             state = self.db.get_backfill_state(channel.id)
             if bool(state.get("complete")):
-                return 0
+                # Re-check channels that were marked complete but have very few
+                # messages — likely a permissions failure that has since been resolved.
+                msg_count = self.db.get_channel_message_count(channel.id) if hasattr(self.db, "get_channel_message_count") else None
+                if msg_count is not None and msg_count < 5:
+                    self._logger.debug(
+                        "Channel %s marked complete but only %d messages — resetting backfill",
+                        channel.id, msg_count,
+                    )
+                    self.db.mark_backfill_complete(channel.id, complete=False)
+                else:
+                    return 0
 
             oldest_message_id = state.get("oldest_message_id")
             oldest_created_at = state.get("oldest_created_at")
@@ -678,8 +704,16 @@ class DiscordArchiveService:
             total = 0
             reached_start = False
 
+            # Don't backfill more than 1 year
+            from datetime import datetime, timedelta, timezone
+            one_year_ago = datetime.now(tz=timezone.utc) - timedelta(days=365)
+
             while pages_left > 0:
-                batch = [m async for m in channel.history(limit=100, oldest_first=False, before=before_obj)]
+                try:
+                    batch = [m async for m in channel.history(limit=100, oldest_first=False, before=before_obj)]
+                except discord.Forbidden:
+                    self._logger.debug("Channel %s: no permission to read history (Forbidden)", channel.id)
+                    return total  # don't mark complete — permissions may change
                 if not batch:
                     reached_start = True
                     break
@@ -705,6 +739,15 @@ class DiscordArchiveService:
                     )
 
                 if next_oldest_id is None or next_oldest_id == oldest_message_id:
+                    reached_start = True
+                    break
+
+                # Stop if we've gone back more than 1 year
+                if next_oldest_created and next_oldest_created < one_year_ago:
+                    self._logger.debug(
+                        "Channel %s: backfill reached 1-year limit (%s)",
+                        channel.id, next_oldest_created,
+                    )
                     reached_start = True
                     break
 
