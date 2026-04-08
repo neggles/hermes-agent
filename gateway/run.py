@@ -1701,11 +1701,11 @@ class GatewayRunner:
         """
         source = event.source
 
-        # Check if user is authorized
-        if not self._is_user_authorized(source):
-            logger.warning("Unauthorized user: %s (%s) on %s", source.user_id, source.user_name, source.platform.value)
-            # In DMs: offer pairing code. In groups: silently ignore.
-            if source.chat_type == "dm" and self._get_unauthorized_dm_behavior(source.platform) == "pair":
+        # Check if user is authorized (only enforce in DMs — in server channels
+        # the bot responds to @mentions/pings from anyone)
+        if source.chat_type == "dm" and not self._is_user_authorized(source):
+            logger.warning("Unauthorized DM user: %s (%s) on %s", source.user_id, source.user_name, source.platform.value)
+            if self._get_unauthorized_dm_behavior(source.platform) == "pair":
                 platform_name = source.platform.value if source.platform else "unknown"
                 # Rate-limit ALL pairing responses (code or rejection) to
                 # prevent spamming the user with repeated messages when
