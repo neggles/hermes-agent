@@ -179,7 +179,7 @@ async def recover_from_restart(gateway: GatewayRunner):
         )
 
         # Trigger the agent to process and continue
-        return await gateway._handle_message(continuation_event)
+        return await adapter.handle_message(continuation_event)
 
     except Exception as e:
         logger.error("Error recovering from restart: %s", e, exc_info=True)
