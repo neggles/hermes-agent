@@ -13,16 +13,28 @@ from typing import TYPE_CHECKING
 
 import discord
 
+from gateway.platforms.discord import DiscordAdapter
 from gateway.run import GatewayRunner
 from gateway.session import SessionSource
 from hermes_constants import get_hermes_dir
 from hermes_state import SessionDB
 from tools.registry import registry
 
+try:
+    from run_agent import AIAgent
+except ImportError:
+    # Avoid circular import issues; type checking will still work
+    if TYPE_CHECKING:
+        from run_agent import AIAgent
+    else:
+        AIAgent = None
+
+RESTART_PLACEHOLDER_TEXT = "🔄 Restarting gateway"
+
 logger = logging.getLogger(__name__)
 
 
-def restart_gateway_tool(agent, args: dict) -> str:
+def restart_gateway_tool(agent: AIAgent, args: dict) -> str:
     if not agent.session_source:
         return json.dumps({"success": False, "error": "No session source available"})
 
@@ -30,19 +42,33 @@ def restart_gateway_tool(agent, args: dict) -> str:
     data_dir = get_hermes_dir("data", "data")
     data_dir.mkdir(parents=True, exist_ok=True)
 
+    # Send a "restarting..." message to the channel as a visible signal.
+    # The message is deleted by recover_from_restart() after the gateway comes back up.
+    reason = args.get("reason", "")
+    pre_restart_text = RESTART_PLACEHOLDER_TEXT + f"{': ' + reason if reason else '...'}"
+
+    try:
+        # send placeholder message
+        agent._emit_status(pre_restart_text)
+    except Exception as e:
+        logger.warning("Failed to send restart placeholder message: %s", e)
+        # Continue anyway - the restart will still happen, just without the placeholder message
+
     # Save session state for recovery
     restart_file = data_dir / "pending_restart.json"
     restart_data = {
         "session_source": agent.session_source.to_dict(),
         "session_id": agent.session_id,
         "timestamp": datetime.now(UTC).isoformat(),
-        "reason": args.get("reason", ""),
+        "reason": reason,
     }
 
     try:
         restart_file.write_text(json.dumps(restart_data, indent=2))
 
-        # Fire the restart command (non-blocking)
+        # Fire the restart command (non-blocking so systemctl returns fast,
+        # but we still need to keep this process alive briefly so the gateway's
+        # response pipeline has time to flush before SIGTERM arrives)
         result = subprocess.run(
             ["systemctl", "--user", "--no-block", "restart", "hermes-gateway.service"],
             capture_output=True,
@@ -50,10 +76,11 @@ def restart_gateway_tool(agent, args: dict) -> str:
         )
 
         if result.returncode == 0:
-            # Sleep to let the gateway shut down cleanly - we won't return a response
-            # because the process is about to be killed by the restart anyway
+            # Short sleep - just long enough for systemd to send SIGTERM.
+            # The process will be killed mid-sleep; anything past this is unreachable.
             import time
-            time.sleep(30)  # Long sleep - gateway will be killed mid-sleep
+
+            time.sleep(3)
             # This line is unreachable but here for completeness
             return json.dumps(
                 {
@@ -104,8 +131,9 @@ async def recover_from_restart(gateway: GatewayRunner):
 
         # For Discord DMs, resolve the actual DM channel ID from user ID
         # The chat_id might be a user ID, but we need the DM channel ID
-        if source.platform.value == "discord" and source.chat_type == "dm":
-            if hasattr(adapter, "_resolve_channel"):
+        existing_restart_msg = None
+        if isinstance(adapter, DiscordAdapter):
+            if source.chat_type == "dm":
                 dm_channel: discord.DMChannel | None = await adapter._resolve_channel(source.chat_id)
                 if dm_channel and dm_channel.id:
                     logger.info(
@@ -126,6 +154,19 @@ async def recover_from_restart(gateway: GatewayRunner):
                         user_id_alt=source.user_id_alt,
                         chat_id_alt=source.chat_id_alt,
                     )
+
+            # check if we left a pre-restart message and delete it
+            try:
+                channel = await adapter._resolve_channel(source.chat_id)
+                if channel:
+                    async for message in channel.history(limit=10):
+                        if message.author.id == adapter._client.user.id and message.content.startswith(
+                            RESTART_PLACEHOLDER_TEXT
+                        ):
+                            existing_restart_msg = message
+                            break
+            except Exception as e:
+                logger.warning("Failed to clean up restart placeholder message: %s", e)
 
         logger.info(
             "Recovering from restart: session=%s, platform=%s, chat_id=%s",
@@ -161,10 +202,14 @@ async def recover_from_restart(gateway: GatewayRunner):
 
         # Send a message to the channel indicating we're back
         try:
-            await adapter.send(
-                source.chat_id,
-                "🔄 Gateway restarted. Continuing...",
-            )
+            if existing_restart_msg:
+                new_text = existing_restart_msg.content.replace(RESTART_PLACEHOLDER_TEXT, "✅ Gateway restarted")
+                await existing_restart_msg.edit(content=new_text)
+            else:
+                await adapter.send(
+                    source.chat_id,
+                    "🔄 Gateway restarted. Continuing...",
+                )
         except Exception as e:
             logger.warning("Failed to send restart notification: %s", e)
 
