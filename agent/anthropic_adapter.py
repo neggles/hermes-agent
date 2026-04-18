@@ -28,7 +28,7 @@ logger = logging.getLogger(__name__)
 
 THINKING_BUDGET = {"xhigh": 32000, "high": 16000, "medium": 8000, "low": 4000}
 ADAPTIVE_EFFORT_MAP = {
-    "xhigh": "max",
+    "xhigh": "xhigh",
     "high": "high",
     "medium": "medium",
     "low": "low",
@@ -40,6 +40,8 @@ ADAPTIVE_EFFORT_MAP = {
 # max_tokens as a mandatory field.  Previously we hardcoded 16384, which
 # starves thinking-enabled models (thinking tokens count toward the limit).
 _ANTHROPIC_OUTPUT_LIMITS = {
+    # Claude 4.7
+    "claude-opus-4-7":   128_000,
     # Claude 4.6
     "claude-opus-4-6":   128_000,
     "claude-sonnet-4-6":  64_000,
@@ -85,8 +87,20 @@ def _get_anthropic_max_output(model: str) -> int:
 
 
 def _supports_adaptive_thinking(model: str) -> bool:
-    """Return True for Claude 4.6 models that support adaptive thinking."""
-    return any(v in model for v in ("4-6", "4.6"))
+    """Return True for Claude 4.6+ models that support adaptive thinking.
+
+    Matches versioned model IDs like claude-opus-4-6, claude-opus-4-7, etc.
+    Any Claude model >= 4.6 uses adaptive thinking; older models use
+    budget_tokens.
+    """
+    import re
+    # Match Claude 4.x minor versions (1-2 digits) — excludes date stamps
+    # like "4-20250514" where the suffix is 8+ digits.
+    m = re.search(r"4[.-](\d{1,2})(?:\b|[^0-9])", model)
+    if m:
+        minor = int(m.group(1))
+        return minor >= 6
+    return False
 
 
 # Beta headers for enhanced features (sent with ALL auth types)
