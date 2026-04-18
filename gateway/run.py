@@ -3085,19 +3085,93 @@ class GatewayRunner:
         session_key = session_entry.session_key
         is_running = session_key in self._running_agents
 
+        # Session title from DB (upstream feature)
+        title = None
+        if self._session_db:
+            try:
+                title = self._session_db.get_session_title(session_entry.session_id)
+            except Exception:
+                title = None
+
         lines = [
             "📊 **Hermes Gateway Status**",
             "",
-            f"**Session ID:** `{session_entry.session_id[:12]}...`",
+            f"**Session ID:** `{session_entry.session_id}`",
+        ]
+        if title:
+            lines.append(f"**Title:** {title}")
+        lines.extend([
             f"**Created:** {session_entry.created_at.strftime('%Y-%m-%d %H:%M')}",
             f"**Last Activity:** {session_entry.updated_at.strftime('%Y-%m-%d %H:%M')}",
-            f"**Tokens:** {session_entry.total_tokens:,}",
+        ])
+
+        # Context window: show current context size vs model limit
+        _last_prompt = session_entry.last_prompt_tokens
+        if _last_prompt > 0:
+            # Try to resolve the model's context length for a percentage
+            _ctx_len = 0
+            try:
+                from agent.model_metadata import get_model_context_length
+                _status_model, _status_base_url, _status_provider = self._resolve_status_model()
+                _ctx_len = get_model_context_length(
+                    _status_model,
+                    base_url=_status_base_url or "",
+                    provider=_status_provider or "",
+                )
+            except Exception:
+                pass
+            if _ctx_len > 0:
+                _pct = min(100, _last_prompt / _ctx_len * 100)
+                lines.append(
+                    f"**Context:** {_last_prompt:,} / {_ctx_len:,} ({_pct:.0f}%)"
+                )
+            else:
+                lines.append(f"**Context:** {_last_prompt:,} tokens")
+
+        # Cumulative session token usage
+        lines.append(f"**Session tokens:** {session_entry.total_tokens:,} (in: {session_entry.input_tokens:,}, out: {session_entry.output_tokens:,})")
+
+        # Cost if available
+        if session_entry.estimated_cost_usd > 0:
+            lines.append(f"**Est. cost:** ${session_entry.estimated_cost_usd:.4f}")
+
+        lines.extend([
             f"**Agent Running:** {'Yes ⚡' if is_running else 'No'}",
             "",
             f"**Connected Platforms:** {', '.join(connected_platforms)}",
-        ]
+        ])
 
         return "\n".join(lines)
+
+    def _resolve_status_model(self):
+        """Resolve the current model/base_url/provider for status display.
+
+        Returns (model, base_url, provider) from config or env.
+        """
+        import os
+        model = os.getenv("HERMES_MODEL", "")
+        base_url = os.getenv("HERMES_BASE_URL", "")
+        provider = os.getenv("HERMES_PROVIDER", "")
+        try:
+            import yaml
+            _cfg_path = _hermes_home / "config.yaml"
+            if _cfg_path.exists():
+                with open(_cfg_path, encoding="utf-8") as f:
+                    _data = yaml.safe_load(f) or {}
+                _model_cfg = _data.get("model", {})
+                if isinstance(_model_cfg, str):
+                    model = model or _model_cfg
+                elif isinstance(_model_cfg, dict):
+                    model = model or _model_cfg.get("default") or _model_cfg.get("model") or model
+                    base_url = base_url or _model_cfg.get("base_url") or base_url
+                    provider = provider or _model_cfg.get("provider") or provider
+            if not base_url or not provider:
+                _runtime = _resolve_runtime_agent_kwargs()
+                base_url = base_url or _runtime.get("base_url", "")
+                provider = provider or _runtime.get("provider", "")
+        except Exception:
+            pass
+        return model, base_url, provider
 
     async def _handle_stop_command(self, event: MessageEvent) -> str:
         """Handle /stop command - interrupt a running agent.
