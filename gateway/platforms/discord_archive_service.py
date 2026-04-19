@@ -123,6 +123,15 @@ class BackfillConfig(BaseModel):
     max_pages_per_channel: int = Field(1, description="Max number of pages to backfill per tick")
     page_pause_sec: float = Field(0.5, description="Delay between page fetches (seconds)")
     channel_pause_sec: float = Field(1.0, description="Delay between channel backfills (seconds)")
+    max_age_days: int = Field(
+        365,
+        description="Global max age (days) for backfilled messages. Backfill stops when it reaches this point.",
+    )
+    channel_max_age_days: dict[int, int] = Field(
+        default_factory=dict,
+        description="Per-channel max age (days) overrides, keyed by channel ID.",
+    )
+
 
 
 class DiscordArchiveConfig(BaseModel):
@@ -704,9 +713,12 @@ class DiscordArchiveService:
             total = 0
             reached_start = False
 
-            # Don't backfill more than 1 year
+            # Max-age cutoff — per-channel override wins over the global default.
             from datetime import datetime, timedelta, timezone
-            one_year_ago = datetime.now(tz=timezone.utc) - timedelta(days=365)
+            max_age_days = self.config.backfill.channel_max_age_days.get(
+                channel.id, self.config.backfill.max_age_days,
+            )
+            age_cutoff = datetime.now(tz=timezone.utc) - timedelta(days=max(1, int(max_age_days)))
 
             while pages_left > 0:
                 try:
@@ -742,11 +754,11 @@ class DiscordArchiveService:
                     reached_start = True
                     break
 
-                # Stop if we've gone back more than 1 year
-                if next_oldest_created and next_oldest_created < one_year_ago:
+                # Stop if we've gone back past the configured max age
+                if next_oldest_created and next_oldest_created < age_cutoff:
                     self._logger.debug(
-                        "Channel %s: backfill reached 1-year limit (%s)",
-                        channel.id, next_oldest_created,
+                        "Channel %s: backfill reached %d-day limit (%s)",
+                        channel.id, max_age_days, next_oldest_created,
                     )
                     reached_start = True
                     break
