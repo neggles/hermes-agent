@@ -643,14 +643,27 @@ class DiscordAdapter(BasePlatformAdapter):
                     except Exception:
                         continue
 
+            # Emojis we treat as feedback signals.
+            # ❌ = hard "don't do that" (also triggers suppression),
+            # 👍/👎 = training signal for future stage-2 finetune.
+            _FEEDBACK_EMOJIS = {"❌", "👍", "👎", "👍🏻", "👍🏼", "👍🏽", "👍🏾", "👍🏿", "👎🏻", "👎🏼", "👎🏽", "👎🏾", "👎🏿"}
+
             @self._client.event
             async def on_raw_reaction_add(payload: Any):
-                """Handle ❌ reactions on ambient-triggered bot messages."""
+                """Handle feedback reactions (❌/👍/👎) on bot messages.
+
+                ❌ also triggers suppression for the channel; 👍/👎 just log feedback.
+                """
                 try:
-                    # Only care about ❌
                     emoji = str(payload.emoji)
-                    if emoji != "❌":
+                    if emoji not in _FEEDBACK_EMOJIS:
                         return
+
+                    # Normalize skin-toned thumbs back to the base emoji
+                    if emoji.startswith("👍"):
+                        emoji = "👍"
+                    elif emoji.startswith("👎"):
+                        emoji = "👎"
 
                     # Only care about reactions to our own messages
                     if not self._client.user or payload.user_id == self._client.user.id:
@@ -659,19 +672,30 @@ class DiscordAdapter(BasePlatformAdapter):
                     channel_id = payload.channel_id
                     message_id = payload.message_id
 
-                    # Check if this is an ambient-triggered message
+                    from hermes_cli.config import get_hermes_home as _get_home
+                    import json as _json
+
+                    # Check if this message was sent by us (any bot message, not just ambient)
                     try:
-                        from hermes_cli.config import get_hermes_home as _get_home
-                        import json as _json
-                        _ambient_path = _get_home() / "data" / "ambient_messages.json"
-                        if not _ambient_path.exists():
+                        channel = self._client.get_channel(channel_id)
+                        if channel:
+                            msg = await channel.fetch_message(message_id)
+                            if not msg or msg.author != self._client.user:
+                                return  # not our message
+                        else:
                             return
-                        _ambient_msgs = _json.loads(_ambient_path.read_text())
-                        ambient_info = _ambient_msgs.get(str(message_id))
-                        if not ambient_info:
-                            return  # not an ambient message
                     except Exception:
                         return
+
+                    # Check if it was specifically an ambient-triggered message (for logging)
+                    ambient_info = None
+                    try:
+                        _ambient_path = _get_home() / "data" / "ambient_messages.json"
+                        if _ambient_path.exists():
+                            _ambient_msgs = _json.loads(_ambient_path.read_text())
+                            ambient_info = _ambient_msgs.get(str(message_id))
+                    except Exception:
+                        pass
 
                     # Validate reactor is a conversation participant (spoke in last 30 min)
                     try:
@@ -681,64 +705,76 @@ class DiscordAdapter(BasePlatformAdapter):
                         )
                         participant_ids = {m["author_id"] for m in recent if m.get("author_id")}
                         if payload.user_id not in participant_ids:
-                            logger.debug("[%s] ❌ reactor %s is not a conversation participant", adapter_self.name, payload.user_id)
+                            logger.debug("[%s] %s reactor %s is not a conversation participant", adapter_self.name, emoji, payload.user_id)
                             return
                     except Exception as e:
                         logger.debug("[%s] Failed to check reactor participation: %s", adapter_self.name, e)
                         # Allow it anyway — better to accept feedback than miss it
 
+                    msg_type = "ambient" if ambient_info else "bot"
                     logger.info(
-                        "[%s] ❌ reaction on ambient message %s in channel %s by user %s",
-                        adapter_self.name, message_id, channel_id, payload.user_id,
+                        "[%s] %s reaction on %s message %s in channel %s by user %s",
+                        adapter_self.name, emoji, msg_type, message_id, channel_id, payload.user_id,
                     )
 
-                    # Edit the bot message
-                    try:
-                        channel = self._client.get_channel(channel_id)
-                        if channel:
-                            msg = await channel.fetch_message(message_id)
-                            if msg and msg.author == self._client.user:
-                                await msg.edit(content="*(backed off — my bad!)*")
-                    except Exception as e:
-                        logger.debug("[%s] Failed to edit message on ❌: %s", adapter_self.name, e)
+                    # ❌-specific behaviors: edit the message and suppress the channel
+                    if emoji == "❌":
+                        try:
+                            await msg.edit(content="*(backed off — my bad!)*")
+                        except Exception as e:
+                            logger.debug("[%s] Failed to edit message on ❌: %s", adapter_self.name, e)
 
-                    # Write suppression entry
-                    try:
-                        import time as _time
-                        _state_path = _get_home() / "data" / "periodic_check_state.json"
-                        if _state_path.exists():
-                            state = _json.loads(_state_path.read_text())
-                        else:
-                            state = {}
-                        suppressed = state.setdefault("suppressed", {})
-                        ch_key = str(channel_id)
-                        existing = suppressed.get(ch_key)
-                        reaction_count = (existing.get("reaction_count", 0) + 1) if existing else 1
-                        suppressed[ch_key] = {
-                            "until_quiet_minutes": 10,
-                            "last_activity": _time.time(),
-                            "reason": "x_reaction",
-                            "reactor": str(payload.user_id),
-                            "triggered_message_id": str(message_id),
-                            "reaction_count": reaction_count,
-                        }
-                        _state_path.write_text(_json.dumps(state) + "\n")
-                    except Exception as e:
-                        logger.warning("[%s] Failed to write suppression state: %s", adapter_self.name, e)
+                        # Write suppression entry
+                        try:
+                            import time as _time
+                            _state_path = _get_home() / "data" / "periodic_check_state.json"
+                            if _state_path.exists():
+                                state = _json.loads(_state_path.read_text())
+                            else:
+                                state = {}
+                            suppressed = state.setdefault("suppressed", {})
+                            ch_key = str(channel_id)
+                            existing = suppressed.get(ch_key)
+                            reaction_count = (existing.get("reaction_count", 0) + 1) if existing else 1
+                            suppressed[ch_key] = {
+                                "until_quiet_minutes": 10,
+                                "last_activity": _time.time(),
+                                "reason": "x_reaction",
+                                "reactor": str(payload.user_id),
+                                "triggered_message_id": str(message_id),
+                                "reaction_count": reaction_count,
+                            }
+                            _state_path.write_text(_json.dumps(state) + "\n")
+                        except Exception as e:
+                            logger.warning("[%s] Failed to write suppression state: %s", adapter_self.name, e)
 
-                    # Log feedback for retraining
+                    # Map emoji to a numeric feedback score for easier downstream use
+                    _feedback_score = {"👍": 1, "❌": -2, "👎": -1}.get(emoji, 0)
+
+                    # Log feedback for retraining (all feedback emojis, with full metrics)
                     try:
                         _feedback_path = _get_home() / "data" / "ambient_feedback.jsonl"
                         feedback = {
                             "timestamp": __import__("datetime").datetime.now(__import__("datetime").timezone.utc).isoformat(),
                             "channel_id": str(channel_id),
                             "message_id": str(message_id),
-                            "trigger_type": ambient_info.get("trigger_type", "unknown"),
                             "reactor_id": str(payload.user_id),
-                            "reaction": "❌",
+                            "reaction": emoji,
+                            "feedback_score": _feedback_score,
+                            "is_ambient": ambient_info is not None,
+                            "trigger_type": ambient_info.get("trigger_type", "unknown") if ambient_info else "non_ambient",
+                            # stage-1 and stage-2 metrics captured at send time
+                            "metrics": ambient_info.get("metrics") if ambient_info else None,
+                            # what Zoe actually said
+                            "bot_message_content": (msg.content or "")[:2000],
+                            # conversation context around the reaction
                             "recent_messages": [
-                                {"author": m.get("author_display"), "content": (m.get("content") or "")[:300]}
-                                for m in recent[-10:]
+                                {
+                                    "author": m.get("author_display"),
+                                    "author_id": str(m.get("author_id", "")),
+                                    "content": (m.get("content") or "")[:300],
+                                }
+                                for m in recent[-15:]
                             ] if recent else [],
                         }
                         with _feedback_path.open("a") as f:
@@ -747,7 +783,7 @@ class DiscordAdapter(BasePlatformAdapter):
                         logger.warning("[%s] Failed to log feedback: %s", adapter_self.name, e)
 
                 except Exception as e:
-                    logger.debug("[%s] Error in ❌ reaction handler: %s", adapter_self.name, e)
+                    logger.debug("[%s] Error in reaction handler: %s", adapter_self.name, e)
 
             @self._client.event
             async def on_thread_create(thread: Any):
