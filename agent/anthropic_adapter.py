@@ -1053,7 +1053,10 @@ def build_anthropic_kwargs(
             effort = str(reasoning_config.get("effort", "medium")).lower()
             budget = THINKING_BUDGET.get(effort, 8000)
             if _supports_adaptive_thinking(model):
-                kwargs["thinking"] = {"type": "adaptive"}
+                kwargs["thinking"] = {
+                    "type": "adaptive",
+                    "display": "summarized",
+                }
                 kwargs["output_config"] = {
                     "effort": ADAPTIVE_EFFORT_MAP.get(effort, "medium")
                 }
