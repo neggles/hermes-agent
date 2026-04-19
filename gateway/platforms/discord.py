@@ -2264,8 +2264,12 @@ class DiscordAdapter(BasePlatformAdapter):
             self._bot_participated_threads.add(thread_id)
             self._save_participated_threads()
 
-    async def _handle_message(self, message: DiscordMessage) -> None:
-        """Handle incoming Discord messages."""
+    async def _handle_message(self, message: DiscordMessage, *, force: bool = False) -> None:
+        """Handle incoming Discord messages.
+
+        If *force* is True, the require-mention / free-channel / thread-participation checks are bypassed.
+        Used when dispatching a message directly rather than via the on_message event
+        """
         # In server channels (not DMs), require the bot to be @mentioned
         # UNLESS the channel is in the free-response list or the message is
         # in a thread where the bot has already participated.
@@ -2296,7 +2300,7 @@ class DiscordAdapter(BasePlatformAdapter):
             # the bot has previously participated (auto-created or replied in).
             in_bot_thread = is_thread and thread_id in self._bot_participated_threads
 
-            if require_mention and not is_free_channel and not in_bot_thread:
+            if require_mention and not is_free_channel and not in_bot_thread and not force:
                 if self._client.user not in message.mentions:
                     return
 
