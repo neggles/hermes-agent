@@ -2281,23 +2281,26 @@ class DiscordAdapter(BasePlatformAdapter):
         if not content:
             content = "[non-text message]"
 
-        # Reply hint
-        reply_suffix = ""
+        # Reply context — rendered as a separate line above the message
+        reply_line = ""
         reply_id = str(msg.get("reply_to_message_id") or "").strip()
         if reply_id:
-            reply_author = str(msg.get("reply_author_display") or "").strip()
+            # Prefer username over display name for consistency
+            reply_author = str(msg.get("reply_author_name") or msg.get("reply_author_display") or "").strip()
             reply_preview = " ".join((msg.get("reply_preview") or "").split()).strip()
+            if reply_preview and len(reply_preview) > 60:
+                reply_preview = reply_preview[:60] + "..."
             if reply_author and reply_preview:
-                reply_suffix = f" (replying <{reply_author}>: {reply_preview})"
+                reply_line = f"  [replying to: <{reply_author}> {reply_preview}]\n"
             elif reply_author:
-                reply_suffix = f" (replying <{reply_author}>)"
+                reply_line = f"  [replying to: <{reply_author}>]\n"
 
-        prefix = f"{timestamp} <{author}>{reply_suffix}: "
+        prefix = f"{timestamp} <{author}>: "
         if "\n" not in content:
-            return f"{prefix}{content}"
+            return f"{reply_line}{prefix}{content}"
 
         first_line, *rest = content.split("\n")
-        rendered = f"{prefix}{first_line}"
+        rendered = f"{reply_line}{prefix}{first_line}"
         if rest:
             rendered += "\n" + "\n".join(rest)
         return rendered

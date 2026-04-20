@@ -5291,6 +5291,9 @@ class GatewayRunner:
             or "all"
         )
         tool_progress_enabled = progress_mode != "off"
+        # Hide tool progress in group/thread chats — too noisy for shared channels
+        if source.chat_type in ("group", "thread"):
+            tool_progress_enabled = False
 
         # Queue for progress messages (thread-safe)
         progress_queue = queue.Queue() if tool_progress_enabled else None

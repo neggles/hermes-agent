@@ -1019,6 +1019,12 @@ class DiscordArchiveDB:
                         or parent.get("author_id")
                         or "unknown"
                     )
+                    enriched["reply_author_name"] = (
+                        parent.get("author_name")
+                        or parent.get("author_display")
+                        or parent.get("author_id")
+                        or "unknown"
+                    )
                     enriched["reply_preview"] = self._reply_preview(
                         parent.get("content"),
                         bool(parent.get("deleted")),
