@@ -134,6 +134,16 @@ class BackfillConfig(BaseModel):
 
 
 
+class ChannelContextConfig(BaseModel):
+    """Configuration for channel context injection into group chat sessions."""
+    model_config: ConfigDict = ConfigDict(extra="allow")
+
+    enabled: bool = Field(True, description="Whether to inject recent channel history into group chat sessions.")
+    fresh_limit: int = Field(20, description="Number of recent messages to include on fresh sessions.")
+    delta_threshold: int = Field(50, description="Max delta messages before treating as fresh window.")
+    max_chars: int = Field(14000, description="Truncate context block if it exceeds this many characters.")
+
+
 class DiscordArchiveConfig(BaseModel):
     model_config: ConfigDict = ConfigDict(extra="allow")
 
@@ -141,6 +151,7 @@ class DiscordArchiveConfig(BaseModel):
     include_dms: bool = Field(True, description="Whether to include DMs in the archive")
     frontfill: FrontfillConfig = Field(default_factory=FrontfillConfig)
     backfill: BackfillConfig = Field(default_factory=BackfillConfig, description="Backfill configuration")
+    context: ChannelContextConfig = Field(default_factory=ChannelContextConfig, description="Channel context injection config")
     allowed_guild_ids: set[int] = Field(
         default_factory=set,
         description="Optional allowlist of guild IDs to archive. If empty, all guilds are included.",

@@ -343,6 +343,9 @@ class MessageEvent:
     # Auto-loaded skill for topic/channel bindings (e.g., Telegram DM Topics)
     auto_skill: Optional[str] = None
     
+    # Channel context (recent messages prepended to user text for group chats)
+    extra_context: Optional[str] = None
+    
     # Timestamps
     timestamp: datetime = field(default_factory=datetime.now)
     

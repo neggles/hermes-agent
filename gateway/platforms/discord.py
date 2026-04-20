@@ -19,7 +19,8 @@ import threading
 import time
 from collections import defaultdict
 from pathlib import Path
-from typing import Any, Callable, Optional
+from datetime import datetime
+from typing import Any, Callable, Optional, Tuple
 
 import discord
 from discord import Intents
@@ -2264,6 +2265,159 @@ class DiscordAdapter(BasePlatformAdapter):
             self._bot_participated_threads.add(thread_id)
             self._save_participated_threads()
 
+    # ------------------------------------------------------------------
+    # Channel context building
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _format_context_line(msg: dict) -> Tuple[str, str]:
+        """Format one archived message for the context block.
+
+        Returns (hour_header, formatted_line) where hour_header is used
+        to group messages by hour.
+        """
+        ts = float(msg.get("created_at") or 0)
+        dt = datetime.fromtimestamp(ts) if ts else datetime.now()
+        hour_header = dt.strftime("%d/%m/%Y %H")
+        minute_second = dt.strftime("%M:%S")
+
+        author = (
+            msg.get("author_display")
+            or msg.get("author_name")
+            or msg.get("author_id")
+            or "unknown"
+        )
+        content = " ".join((msg.get("content") or "").split())
+        if not content:
+            content = "[non-text message]"
+
+        # Reply hint
+        reply_suffix = ""
+        reply_id = str(msg.get("reply_to_message_id") or "").strip()
+        if reply_id:
+            reply_author = str(msg.get("reply_author_display") or "").strip()
+            reply_preview = " ".join((msg.get("reply_preview") or "").split()).strip()
+            if reply_author and reply_preview:
+                reply_suffix = f" (replying <{reply_author}>: {reply_preview})"
+            elif reply_author:
+                reply_suffix = f" (replying <{reply_author}>)"
+
+        prefix = f"{minute_second} <{author}>{reply_suffix}: "
+        if "\n" not in content:
+            return hour_header, f"{prefix}{content}"
+
+        first_line, *rest = content.split("\n")
+        rendered = f"{prefix}{first_line}"
+        if rest:
+            rendered += "\n" + "\n".join(rest)
+        return hour_header, rendered
+
+    def _render_context_block(
+        self,
+        rows: list[dict],
+        channel_label: str,
+    ) -> str:
+        """Render a list of archived messages into a context block string."""
+        if not rows:
+            return ""
+
+        lines: list[str] = []
+        last_hour: str | None = None
+        for row in rows:
+            hour_header, line = self._format_context_line(row)
+            if hour_header != last_hour:
+                lines.append(hour_header)
+                last_hour = hour_header
+            lines.append(line)
+
+        header = f"[Discord context | {channel_label}]"
+        block = header + "\n" + "\n".join(lines)
+
+        max_chars = self._archive_service.config.context.max_chars
+        if len(block) <= max_chars:
+            return block
+
+        # Truncate from the top (keep most recent messages).
+        budget = max(500, max_chars - len(header) - 32)
+        body = "\n".join(lines)
+        if len(body) > budget:
+            body = "...[context truncated]...\n" + body[-budget:]
+        return header + "\n" + body
+
+    async def _build_channel_context(self, message: DiscordMessage) -> str | None:
+        """Build a channel context block for group/thread messages.
+
+        Returns a formatted text block to prepend to the user's message,
+        or None if no context is available / applicable.
+        """
+        db = self._archive_service.db
+        if db is None:
+            return None
+
+        ctx_config = self._archive_service.config.context
+        if not ctx_config.enabled:
+            return None
+
+        channel_id = int(message.channel.id)
+        current_message_id = int(message.id)
+
+        anchor = db.get_turn_anchor(channel_id)
+        fresh_limit = ctx_config.fresh_limit
+        threshold = ctx_config.delta_threshold
+
+        if anchor is not None:
+            delta = db.count_new_non_bot_messages(channel_id, anchor)
+            if delta > threshold:
+                # Too many messages since last response — treat as fresh window
+                anchor = None
+            elif delta == 0:
+                # Nothing new since last response — advance anchor, skip context
+                db.set_turn_anchor(channel_id, current_message_id)
+                return None
+
+        if anchor is not None:
+            rows = db.list_messages_after(
+                channel_id=channel_id,
+                after_message_id=anchor,
+                limit=threshold,
+                include_bots=False,
+            )
+        else:
+            rows = db.list_recent_messages(
+                channel_id=channel_id,
+                limit=fresh_limit,
+                include_bots=False,
+            )
+
+        # Filter out the current message (it'll be the user turn itself)
+        rows = [r for r in rows if int(r.get("message_id", 0)) != current_message_id]
+
+        if not rows:
+            db.set_turn_anchor(channel_id, current_message_id)
+            return None
+
+        # Enrich with reply context (batch lookup)
+        try:
+            rows = db.enrich_reply_context_rows(rows)
+        except Exception as e:
+            logger.debug("Channel context reply enrichment failed: %s", e)
+
+        # Build channel label
+        ch_name = getattr(message.channel, "name", str(message.channel.id))
+        guild = getattr(message.channel, "guild", None)
+        label = f"{guild.name} / #{ch_name}" if guild else ch_name
+
+        block = self._render_context_block(rows, label)
+
+        # Advance anchor
+        db.set_turn_anchor(channel_id, current_message_id)
+
+        return block if block else None
+
+    # ------------------------------------------------------------------
+    # Message handling
+    # ------------------------------------------------------------------
+
     async def _handle_message(self, message: DiscordMessage, *, force: bool = False) -> None:
         """Handle incoming Discord messages.
 
@@ -2495,6 +2649,15 @@ class DiscordAdapter(BasePlatformAdapter):
             reply_to_message_id=str(message.reference.message_id) if message.reference else None,
             timestamp=message.created_at,
         )
+
+        # Inject channel context for group/thread chats (not DMs)
+        if chat_type in ("group", "thread"):
+            try:
+                channel_context = await self._build_channel_context(message)
+                if channel_context:
+                    event.extra_context = channel_context
+            except Exception as e:
+                logger.debug("Channel context build failed: %s", e)
 
         # Track thread participation so the bot won't require @mention for
         # follow-up messages in threads it has already engaged in.

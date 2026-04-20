@@ -2580,6 +2580,15 @@ class GatewayRunner:
                 message_text = f"{context_note}\n\n{message_text}"
 
         # -----------------------------------------------------------------
+        # Inject channel context (recent messages from group/thread chats).
+        # Prepended to the user message so the model sees channel activity
+        # right before the current turn — correct temporal ordering.
+        # -----------------------------------------------------------------
+        extra_context = getattr(event, "extra_context", None)
+        if extra_context:
+            message_text = f"{extra_context}\n\n{message_text}"
+
+        # -----------------------------------------------------------------
         # Inject reply context when user replies to a message not in history.
         # Telegram (and other platforms) let users reply to specific messages,
         # but if the quoted message is from a previous session, cron delivery,
@@ -3012,6 +3021,18 @@ class GatewayRunner:
 
         # Reset the session
         new_entry = self.session_store.reset_session(session_key)
+
+        # Clear Discord channel context turn anchor so the next turn
+        # starts from a fresh latest-N context window.
+        if source.platform == Platform.DISCORD:
+            try:
+                adapter = self.adapters.get(Platform.DISCORD)
+                archive_svc = getattr(adapter, "_archive_service", None)
+                archive_db = getattr(archive_svc, "db", None) if archive_svc else None
+                if archive_db:
+                    archive_db.clear_turn_anchor(int(source.chat_id))
+            except Exception as e:
+                logger.debug("Discord turn-anchor reset failed: %s", e)
 
         # Emit session:end hook (session is ending)
         await self.hooks.emit("session:end", {
