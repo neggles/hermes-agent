@@ -2270,23 +2270,13 @@ class DiscordAdapter(BasePlatformAdapter):
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _format_context_line(msg: dict) -> Tuple[str, str]:
-        """Format one archived message for the context block.
-
-        Returns (hour_header, formatted_line) where hour_header is used
-        to group messages by hour.
-        """
+    def _format_context_line(msg: dict) -> str:
+        """Format one archived message for the context block."""
         ts = float(msg.get("created_at") or 0)
         dt = datetime.fromtimestamp(ts) if ts else datetime.now()
-        hour_header = dt.strftime("%d/%m/%Y %H")
-        minute_second = dt.strftime("%M:%S")
+        timestamp = dt.strftime("%H:%M:%S")
 
-        author = (
-            msg.get("author_display")
-            or msg.get("author_name")
-            or msg.get("author_id")
-            or "unknown"
-        )
+        author = msg.get("author_name") or str(msg.get("author_id") or "unknown")
         content = " ".join((msg.get("content") or "").split())
         if not content:
             content = "[non-text message]"
@@ -2302,15 +2292,15 @@ class DiscordAdapter(BasePlatformAdapter):
             elif reply_author:
                 reply_suffix = f" (replying <{reply_author}>)"
 
-        prefix = f"{minute_second} <{author}>{reply_suffix}: "
+        prefix = f"{timestamp} <{author}>{reply_suffix}: "
         if "\n" not in content:
-            return hour_header, f"{prefix}{content}"
+            return f"{prefix}{content}"
 
         first_line, *rest = content.split("\n")
         rendered = f"{prefix}{first_line}"
         if rest:
             rendered += "\n" + "\n".join(rest)
-        return hour_header, rendered
+        return rendered
 
     def _render_context_block(
         self,
@@ -2322,15 +2312,13 @@ class DiscordAdapter(BasePlatformAdapter):
             return ""
 
         lines: list[str] = []
-        last_hour: str | None = None
         for row in rows:
-            hour_header, line = self._format_context_line(row)
-            if hour_header != last_hour:
-                lines.append(hour_header)
-                last_hour = hour_header
-            lines.append(line)
+            lines.append(self._format_context_line(row))
 
-        header = f"[Discord context | {channel_label}]"
+        # Include date from the earliest message in the block
+        first_ts = float(rows[0].get("created_at") or 0) if rows else 0
+        date_str = datetime.fromtimestamp(first_ts).strftime("%Y-%m-%d") if first_ts else ""
+        header = f"[Discord context | {channel_label} | {date_str}]" if date_str else f"[Discord context | {channel_label}]"
         block = header + "\n" + "\n".join(lines)
 
         max_chars = self._archive_service.config.context.max_chars

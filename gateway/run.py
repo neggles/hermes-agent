@@ -2580,6 +2580,17 @@ class GatewayRunner:
                 message_text = f"{context_note}\n\n{message_text}"
 
         # -----------------------------------------------------------------
+        # In group/thread chats, prefix the message with the author's name
+        # so the model knows who said what in a shared session.
+        # -----------------------------------------------------------------
+        if source.chat_type in ("group", "thread"):
+            ts = event.timestamp.strftime("%H:%M:%S") if event.timestamp else ""
+            # Use the actual username (stable, unique) rather than display name
+            raw_msg = getattr(event, "raw_message", None)
+            author = getattr(getattr(raw_msg, "author", None), "name", None) or source.user_name or "unknown"
+            message_text = f"{ts} <{author}>: {message_text}"
+
+        # -----------------------------------------------------------------
         # Inject channel context (recent messages from group/thread chats).
         # Prepended to the user message so the model sees channel activity
         # right before the current turn — correct temporal ordering.
