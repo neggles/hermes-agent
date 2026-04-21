@@ -977,6 +977,36 @@ class DiscordAdapter(BasePlatformAdapter):
             return SendResult(success=False, error=f"Could not resolve channel {chat_id}")
 
         try:
+            # Reverse custom emoji normalization: :name: → <:name:id>
+            # The inbound path strips IDs for readability; restore them so
+            # Discord renders the emoji. Only matches :word: that correspond
+            # to an actual custom emoji the bot can see.
+            if self._client.emojis:
+                emoji_map = {e.name: e for e in self._client.emojis}
+                def _restore_emoji(m: re.Match) -> str:
+                    name = m.group(1)
+                    e = emoji_map.get(name)
+                    if e:
+                        return f"<{'a' if e.animated else ''}:{e.name}:{e.id}>"
+                    return m.group(0)  # not a custom emoji, leave as-is
+                content = re.sub(r":(\w+):", _restore_emoji, content)
+
+            # Resolve @username mentions → <@id> so Discord renders them as pings.
+            # Matches @word patterns that aren't already Discord mention syntax.
+            if channel and hasattr(channel, "guild") and channel.guild:
+                members_by_name: dict[str, int] = {}
+                for member in channel.guild.members:
+                    members_by_name[member.name.lower()] = member.id
+                    if member.display_name.lower() != member.name.lower():
+                        members_by_name[member.display_name.lower()] = member.id
+                def _resolve_mention(m: re.Match) -> str:
+                    name = m.group(1).lower()
+                    mid = members_by_name.get(name)
+                    if mid:
+                        return f"<@{mid}>"
+                    return m.group(0)
+                content = re.sub(r"(?<![<])@(\w+)", _resolve_mention, content)
+
             # Format and split message if needed
             formatted = self.format_message(content)
             chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
