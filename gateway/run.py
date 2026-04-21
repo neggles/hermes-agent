@@ -270,6 +270,18 @@ def _expand_whatsapp_auth_aliases(identifier: str) -> set:
 
 logger = logging.getLogger(__name__)
 
+# Tools blocked in non-DM (guild/group/thread) contexts.
+# Defense in depth: the model *should* decline dangerous requests, but if it
+# doesn't, these tools simply aren't in the schema or valid_tool_names.
+GUILD_BLOCKED_TOOLS: set[str] = {
+    "terminal", "process", "write_file", "patch",
+    "execute_code", "skill_manage",
+    "restart_gateway", "cronjob", "send_message",
+    "delegate_task",
+}
+# Note: "memory" is NOT blocked — it's redirected to guild-scoped storage
+# via MemoryStore.use_guild_dir() so the agent can maintain per-server notes.
+
 # Sentinel placed into _running_agents immediately when a session starts
 # processing, *before* any await.  Prevents a second message for the same
 # session from bypassing the "already running" guard during the async gap
@@ -4082,6 +4094,14 @@ class GatewayRunner:
                     fallback_model=self._fallback_model,
                 )
 
+                # Guild safety: strip dangerous tools for non-DM background tasks
+                if source.chat_type != "dm":
+                    agent.tools = [
+                        t for t in agent.tools
+                        if t.get("function", {}).get("name") not in GUILD_BLOCKED_TOOLS
+                    ]
+                    agent.valid_tool_names -= GUILD_BLOCKED_TOOLS
+
                 return agent.run_conversation(
                     user_message=prompt,
                     task_id=task_id,
@@ -5623,6 +5643,35 @@ class GatewayRunner:
             agent.status_callback = _status_callback_sync
             agent.reasoning_config = reasoning_config
             agent.session_source = source
+
+            # Guild safety: strip dangerous tools in non-DM contexts.
+            # Defense in depth — even if the model declines, the tools
+            # simply aren't available to be called.
+            if source.chat_type != "dm":
+                agent.tools = [
+                    t for t in agent.tools
+                    if t.get("function", {}).get("name") not in GUILD_BLOCKED_TOOLS
+                ]
+                agent.valid_tool_names -= GUILD_BLOCKED_TOOLS
+                logger.info(
+                    "Guild context (%s) — blocked %d tool(s), %d remain",
+                    source.chat_type, len(GUILD_BLOCKED_TOOLS), len(agent.tools),
+                )
+
+                # Redirect memory to guild-scoped directory so personal
+                # MEMORY.md and USER.md are never injected or accessible.
+                if source.guild_id and getattr(agent, "_memory_store", None):
+                    from hermes_constants import get_hermes_home
+                    guild_dir = (
+                        get_hermes_home() / "memories" / "discord"
+                        / "guilds" / source.guild_id
+                    )
+                    agent._memory_store.use_guild_dir(guild_dir)
+                    # Invalidate cached prompt so it rebuilds with guild memory
+                    agent._cached_system_prompt = None
+                    logger.info(
+                        "Guild memory: redirected to %s", guild_dir,
+                    )
 
             # Background review delivery — send "💾 Memory updated" etc. to user
             def _bg_review_send(message: str) -> None:

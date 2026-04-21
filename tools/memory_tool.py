@@ -96,6 +96,10 @@ class MemoryStore:
         Never mutated mid-session. Keeps prefix cache stable.
       - memory_entries / user_entries: live state, mutated by tool calls, persisted to disk.
         Tool responses always reflect this live state.
+
+    For guild-scoped sessions, call ``use_guild_dir(guild_dir)`` after construction
+    to redirect all reads/writes to a guild-specific directory.  The "user" target
+    becomes SERVER_PROFILE.md in that directory.
     """
 
     def __init__(self, memory_char_limit: int = 2200, user_char_limit: int = 1375):
@@ -105,13 +109,30 @@ class MemoryStore:
         self.user_char_limit = user_char_limit
         # Frozen snapshot for system prompt -- set once at load_from_disk()
         self._system_prompt_snapshot: Dict[str, str] = {"memory": "", "user": ""}
+        # Guild override — set via use_guild_dir() to redirect storage
+        self._active_dir: Path = MEMORY_DIR
+        self._is_guild: bool = False
+
+    def use_guild_dir(self, guild_dir: Path) -> None:
+        """Switch this store to guild-scoped paths and reload.
+
+        After calling this, all reads/writes target ``guild_dir`` instead of
+        the default ``~/.hermes/memories/``.  The "user" target maps to
+        SERVER_PROFILE.md (the guild's public identity), not USER.md.
+
+        Typically called from the gateway after session_source is set but
+        before the first API call (system prompt is built lazily).
+        """
+        self._active_dir = guild_dir
+        self._is_guild = True
+        self.load_from_disk()
 
     def load_from_disk(self):
-        """Load entries from MEMORY.md and USER.md, capture system prompt snapshot."""
-        MEMORY_DIR.mkdir(parents=True, exist_ok=True)
+        """Load entries from MEMORY.md and USER.md (or guild equivalents)."""
+        self._active_dir.mkdir(parents=True, exist_ok=True)
 
-        self.memory_entries = self._read_file(MEMORY_DIR / "MEMORY.md")
-        self.user_entries = self._read_file(MEMORY_DIR / "USER.md")
+        self.memory_entries = self._read_file(self._active_dir / "MEMORY.md")
+        self.user_entries = self._read_file(self._path_for("user"))
 
         # Deduplicate entries (preserves order, keeps first occurrence)
         self.memory_entries = list(dict.fromkeys(self.memory_entries))
@@ -141,11 +162,12 @@ class MemoryStore:
             fcntl.flock(fd, fcntl.LOCK_UN)
             fd.close()
 
-    @staticmethod
-    def _path_for(target: str) -> Path:
+    def _path_for(self, target: str) -> Path:
         if target == "user":
-            return MEMORY_DIR / "USER.md"
-        return MEMORY_DIR / "MEMORY.md"
+            if self._is_guild:
+                return self._active_dir / "SERVER_PROFILE.md"
+            return self._active_dir / "USER.md"
+        return self._active_dir / "MEMORY.md"
 
     def _reload_target(self, target: str):
         """Re-read entries from disk into in-memory state.
@@ -158,7 +180,7 @@ class MemoryStore:
 
     def save_to_disk(self, target: str):
         """Persist entries to the appropriate file. Called after every mutation."""
-        MEMORY_DIR.mkdir(parents=True, exist_ok=True)
+        self._active_dir.mkdir(parents=True, exist_ok=True)
         self._write_file(self._path_for(target), self._entries_for(target))
 
     def _entries_for(self, target: str) -> List[str]:
@@ -363,9 +385,15 @@ class MemoryStore:
         pct = min(100, int((current / limit) * 100)) if limit > 0 else 0
 
         if target == "user":
-            header = f"USER PROFILE (who the user is) [{pct}% — {current:,}/{limit:,} chars]"
+            if self._is_guild:
+                header = f"SERVER PROFILE (this server's context) [{pct}% — {current:,}/{limit:,} chars]"
+            else:
+                header = f"USER PROFILE (who the user is) [{pct}% — {current:,}/{limit:,} chars]"
         else:
-            header = f"MEMORY (your personal notes) [{pct}% — {current:,}/{limit:,} chars]"
+            if self._is_guild:
+                header = f"SERVER MEMORY (notes for this server) [{pct}% — {current:,}/{limit:,} chars]"
+            else:
+                header = f"MEMORY (your personal notes) [{pct}% — {current:,}/{limit:,} chars]"
 
         separator = "═" * 46
         return f"{separator}\n{header}\n{separator}\n{content}"
