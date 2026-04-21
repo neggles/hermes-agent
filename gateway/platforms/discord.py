@@ -2534,7 +2534,29 @@ class DiscordAdapter(BasePlatformAdapter):
                     ext = "." + content_type.split("/")[-1].split(";")[0]
                     if ext not in (".jpg", ".jpeg", ".png", ".gif", ".webp"):
                         ext = ".jpg"
-                    cached_path = await cache_image_from_url(att.url, ext=ext)
+
+                    # If the image is too large for vision APIs, use Discord's
+                    # CDN thumbnail (proxy_url with size params) instead.
+                    MAX_IMAGE_BYTES = 10 * 1024 * 1024  # 10 MB
+                    image_url = att.url
+                    if att.size and att.size > MAX_IMAGE_BYTES and att.proxy_url:
+                        # Scale down to fit within ~2048px on the longest side
+                        # Discord CDN supports ?width=N&height=N for on-the-fly resize
+                        w, h = att.width or 0, att.height or 0
+                        if w and h:
+                            scale = min(2048 / max(w, h), 1.0)
+                            tw, th = int(w * scale), int(h * scale)
+                            image_url = f"{att.proxy_url}?width={tw}&height={th}&format=webp"
+                        else:
+                            image_url = f"{att.proxy_url}?width=2048&height=2048&format=webp"
+                        ext = ".webp"
+                        logger.info(
+                            "[Discord] Image too large (%.1f MB), using CDN thumbnail: %s",
+                            att.size / (1024 * 1024),
+                            image_url[:100],
+                        )
+
+                    cached_path = await cache_image_from_url(image_url, ext=ext)
                     media_urls.append(cached_path)
                     media_types.append(content_type)
                     print(f"[Discord] Cached user image: {cached_path}", flush=True)
