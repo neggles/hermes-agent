@@ -1846,7 +1846,6 @@ class DiscordAdapter(BasePlatformAdapter):
         if _slash_allowed:
             logger.info("[%s] Slash command user whitelist: %s", self.name, _slash_allowed)
 
-            @tree.interaction_check
             async def _global_slash_check(interaction: discord.Interaction) -> bool:
                 if interaction.user.id not in _slash_allowed:
                     await interaction.response.send_message(
@@ -1854,6 +1853,8 @@ class DiscordAdapter(BasePlatformAdapter):
                     )
                     return False
                 return True
+
+            tree.interaction_check = _global_slash_check
 
         @tree.command(name="new", description="Start a new conversation")
         async def slash_new(interaction: discord.Interaction):
