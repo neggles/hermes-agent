@@ -2320,6 +2320,28 @@ class DiscordAdapter(BasePlatformAdapter):
     # Channel context building
     # ------------------------------------------------------------------
 
+    _MENTION_RE = re.compile(r"<@!?(\d+)>")
+
+    def _resolve_mention_ids(self, text: str) -> str:
+        """Replace <@id> with @username using guild member caches."""
+        if not self._client or not self._client.guilds:
+            return text
+        # Build map lazily (cheap — discord.py caches members in memory)
+        id_to_name: dict[int, str] = {}
+        if self._client.user:
+            id_to_name[self._client.user.id] = self._client.user.name
+        for guild in self._client.guilds:
+            for member in guild.members:
+                if member.id not in id_to_name:
+                    id_to_name[member.id] = member.name
+        if not id_to_name:
+            return text
+        def _repl(m: re.Match) -> str:
+            uid = int(m.group(1))
+            name = id_to_name.get(uid)
+            return f"@{name}" if name else m.group(0)
+        return self._MENTION_RE.sub(_repl, text)
+
     @staticmethod
     def _format_context_line(msg: dict) -> str:
         """Format one archived message for the context block."""
@@ -2374,6 +2396,9 @@ class DiscordAdapter(BasePlatformAdapter):
         date_str = datetime.fromtimestamp(first_ts).strftime("%Y-%m-%d") if first_ts else ""
         header = f"[Discord context | {channel_label} | {date_str}]" if date_str else f"[Discord context | {channel_label}]"
         block = header + "\n" + "\n".join(lines)
+
+        # Resolve <@id> mentions to @username for readability
+        block = self._resolve_mention_ids(block)
 
         max_chars = self._archive_service.config.context.max_chars
         if len(block) <= max_chars:
@@ -2764,6 +2789,8 @@ class DiscordAdapter(BasePlatformAdapter):
         # Keeps the descriptive name, drops the opaque snowflake ID
         if event_text:
             event_text = re.sub(r"<a?:(\w+):\d+>", r":\1:", event_text)
+            # Resolve <@id> mentions to @username for readability
+            event_text = self._resolve_mention_ids(event_text)
 
         if pending_text_injection:
             event_text = f"{pending_text_injection}\n\n{event_text}" if event_text else pending_text_injection
