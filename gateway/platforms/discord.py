@@ -2445,6 +2445,12 @@ class DiscordAdapter(BasePlatformAdapter):
         If *force* is True, the require-mention / free-channel / thread-participation checks are bypassed.
         Used when dispatching a message directly rather than via the on_message event
         """
+        # Check if this channel is muted (set by periodic_check hook via /ambient mute).
+        # Muted channels ignore all messages — pings, replies, everything.
+        muted = getattr(self, "_muted_channels", None)
+        if muted and message.channel.id in muted:
+            return
+
         # In server channels (not DMs), require the bot to be @mentioned
         # UNLESS the channel is in the free-response list or the message is
         # in a thread where the bot has already participated.
