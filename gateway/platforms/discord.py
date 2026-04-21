@@ -2535,26 +2535,55 @@ class DiscordAdapter(BasePlatformAdapter):
                     if ext not in (".jpg", ".jpeg", ".png", ".gif", ".webp"):
                         ext = ".jpg"
 
-                    # If the image is too large for vision APIs, use Discord's
-                    # CDN thumbnail (proxy_url with size params) instead.
-                    MAX_IMAGE_BYTES = 10 * 1024 * 1024  # 10 MB
+                    # Use Discord's CDN proxy to downscale images that are too
+                    # large for vision APIs or exceed the resolution cap.
+                    # Most vision APIs charge by token count which scales with
+                    # pixel count, and reject payloads over ~8 MB (pre-base64).
+                    MAX_IMAGE_BYTES = 8 * 1024 * 1024  # 8 MB (leaves room for base64 overhead)
+                    MAX_IMAGE_PIXELS = 2048  # longest side cap
                     image_url = att.url
-                    if att.size and att.size > MAX_IMAGE_BYTES and att.proxy_url:
-                        # Scale down to fit within ~2048px on the longest side
-                        # Discord CDN supports ?width=N&height=N for on-the-fly resize
-                        w, h = att.width or 0, att.height or 0
+                    w, h = att.width or 0, att.height or 0
+                    needs_resize = (
+                        (att.size and att.size > MAX_IMAGE_BYTES)
+                        or (w and h and max(w, h) > MAX_IMAGE_PIXELS)
+                    )
+                    if needs_resize and att.proxy_url:
                         if w and h:
-                            scale = min(2048 / max(w, h), 1.0)
+                            scale = min(MAX_IMAGE_PIXELS / max(w, h), 1.0)
                             tw, th = int(w * scale), int(h * scale)
-                            image_url = f"{att.proxy_url}?width={tw}&height={th}&format=webp"
+                            size_params = f"?width={tw}&height={th}"
                         else:
-                            image_url = f"{att.proxy_url}?width=2048&height=2048&format=webp"
-                        ext = ".webp"
-                        logger.info(
-                            "[Discord] Image too large (%.1f MB), using CDN thumbnail: %s",
-                            att.size / (1024 * 1024),
-                            image_url[:100],
+                            size_params = f"?width={MAX_IMAGE_PIXELS}&height={MAX_IMAGE_PIXELS}"
+                        reason = (
+                            f"too large ({att.size / (1024 * 1024):.1f} MB)"
+                            if att.size and att.size > MAX_IMAGE_BYTES
+                            else f"high res ({w}x{h})"
                         )
+
+                        # Try PNG first (lossless), fall back to JPG if still too big
+                        image_url = f"{att.proxy_url}{size_params}&format=png"
+                        ext = ".png"
+                        logger.info(
+                            "[Discord] Image %s, trying CDN PNG: %s",
+                            reason,
+                            image_url[:120],
+                        )
+                        cached_path = await cache_image_from_url(image_url, ext=ext)
+                        cached_size = Path(cached_path).stat().st_size
+                        if cached_size > MAX_IMAGE_BYTES:
+                            logger.info(
+                                "[Discord] CDN PNG still %.1f MB, falling back to JPG",
+                                cached_size / (1024 * 1024),
+                            )
+                            Path(cached_path).unlink(missing_ok=True)
+                            image_url = f"{att.proxy_url}{size_params}&format=jpg"
+                            ext = ".jpg"
+                            cached_path = await cache_image_from_url(image_url, ext=ext)
+
+                        media_urls.append(cached_path)
+                        media_types.append(content_type)
+                        print(f"[Discord] Cached user image: {cached_path}", flush=True)
+                        continue
 
                     cached_path = await cache_image_from_url(image_url, ext=ext)
                     media_urls.append(cached_path)
@@ -2642,7 +2671,43 @@ class DiscordAdapter(BasePlatformAdapter):
                                 exc_info=True,
                             )
 
+        # Handle stickers — treat as images with "sticker:" prefix in description
+        if message.stickers:
+            for sticker in message.stickers:
+                # Lottie stickers are JSON vector format — no raster image to analyze
+                if sticker.format == discord.StickerFormatType.lottie:
+                    if pending_text_injection:
+                        pending_text_injection += f"\n\n[Sticker: {sticker.name}] (animated vector, no image)"
+                    else:
+                        pending_text_injection = f"[Sticker: {sticker.name}] (animated vector, no image)"
+                    continue
+                try:
+                    ext = ".png" if sticker.format == discord.StickerFormatType.png else ".gif"
+                    cached_path = await cache_image_from_url(sticker.url, ext=ext)
+                    media_urls.append(cached_path)
+                    media_types.append(f"image/{ext.lstrip('.')}")
+                    # Tag as sticker so vision description gets prefixed
+                    if pending_text_injection:
+                        pending_text_injection += f"\n\n[Sticker: {sticker.name}]"
+                    else:
+                        pending_text_injection = f"[Sticker: {sticker.name}]"
+                    logger.debug("[Discord] Cached sticker '%s': %s", sticker.name, cached_path)
+                    if not msg_type or msg_type == MessageType.TEXT:
+                        msg_type = MessageType.PHOTO
+                except Exception as e:
+                    logger.debug("[Discord] Failed to cache sticker '%s': %s", sticker.name, e)
+                    if pending_text_injection:
+                        pending_text_injection += f"\n\n[Sticker: {sticker.name}] (failed to load)"
+                    else:
+                        pending_text_injection = f"[Sticker: {sticker.name}] (failed to load)"
+
         event_text = message.content
+
+        # Normalize custom emoji: <:name:id> / <a:name:id> → :name:
+        # Keeps the descriptive name, drops the opaque snowflake ID
+        if event_text:
+            event_text = re.sub(r"<a?:(\w+):\d+>", r":\1:", event_text)
+
         if pending_text_injection:
             event_text = f"{pending_text_injection}\n\n{event_text}" if event_text else pending_text_injection
 
