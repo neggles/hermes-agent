@@ -725,27 +725,14 @@ class DiscordAdapter(BasePlatformAdapter):
                         except Exception as e:
                             logger.debug("[%s] Failed to edit message on ❌: %s", adapter_self.name, e)
 
-                        # Write suppression entry
+                        # Write suppression via the shared SuppressionManager
                         try:
-                            import time as _time
-                            _state_path = _get_home() / "data" / "periodic_check_state.json"
-                            if _state_path.exists():
-                                state = _json.loads(_state_path.read_text())
-                            else:
-                                state = {}
-                            suppressed = state.setdefault("suppressed", {})
-                            ch_key = str(channel_id)
-                            existing = suppressed.get(ch_key)
-                            reaction_count = (existing.get("reaction_count", 0) + 1) if existing else 1
-                            suppressed[ch_key] = {
-                                "until_quiet_minutes": 10,
-                                "last_activity": _time.time(),
-                                "reason": "x_reaction",
-                                "reactor": str(payload.user_id),
-                                "triggered_message_id": str(message_id),
-                                "reaction_count": reaction_count,
-                            }
-                            _state_path.write_text(_json.dumps(state) + "\n")
+                            from hooks.periodic_check.suppression import get_suppression_manager
+                            get_suppression_manager().suppress(
+                                channel_id,
+                                reactor=str(payload.user_id),
+                                triggered_message_id=str(message_id),
+                            )
                         except Exception as e:
                             logger.warning("[%s] Failed to write suppression state: %s", adapter_self.name, e)
 
