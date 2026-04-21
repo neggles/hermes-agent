@@ -727,7 +727,7 @@ class DiscordAdapter(BasePlatformAdapter):
 
                         # Write suppression via the shared SuppressionManager
                         try:
-                            from gateway.suppression import get_suppression_manager
+                            from suppression import get_suppression_manager
                             get_suppression_manager().suppress(
                                 channel_id,
                                 reactor=str(payload.user_id),
