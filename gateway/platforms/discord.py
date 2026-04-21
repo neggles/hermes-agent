@@ -1834,6 +1834,27 @@ class DiscordAdapter(BasePlatformAdapter):
 
         tree = self._client.tree
 
+        # Global interaction check: restrict slash commands to whitelisted users.
+        # If DISCORD_SLASH_COMMAND_USERS is unset/empty, all users are allowed.
+        _slash_allowed_raw = os.getenv("DISCORD_SLASH_COMMAND_USERS", "")
+        _slash_allowed: set[int] = set()
+        for _uid in _slash_allowed_raw.split(","):
+            _uid = _uid.strip()
+            if _uid.isdigit():
+                _slash_allowed.add(int(_uid))
+
+        if _slash_allowed:
+            logger.info("[%s] Slash command user whitelist: %s", self.name, _slash_allowed)
+
+            @tree.interaction_check
+            async def _global_slash_check(interaction: discord.Interaction) -> bool:
+                if interaction.user.id not in _slash_allowed:
+                    await interaction.response.send_message(
+                        "⛔ You don't have permission to use this command.", ephemeral=True,
+                    )
+                    return False
+                return True
+
         @tree.command(name="new", description="Start a new conversation")
         async def slash_new(interaction: discord.Interaction):
             await self._run_simple_slash(interaction, "/reset", "New conversation started~")
