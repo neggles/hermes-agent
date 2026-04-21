@@ -5648,14 +5648,17 @@ class GatewayRunner:
             # Defense in depth — even if the model declines, the tools
             # simply aren't available to be called.
             if source.chat_type != "dm":
-                agent.tools = [
-                    t for t in agent.tools
-                    if t.get("function", {}).get("name") not in GUILD_BLOCKED_TOOLS
-                ]
-                agent.valid_tool_names -= GUILD_BLOCKED_TOOLS
+                if hasattr(agent, "tools") and agent.tools:
+                    agent.tools = [
+                        t for t in agent.tools
+                        if t.get("function", {}).get("name") not in GUILD_BLOCKED_TOOLS
+                    ]
+                if hasattr(agent, "valid_tool_names") and agent.valid_tool_names:
+                    agent.valid_tool_names -= GUILD_BLOCKED_TOOLS
                 logger.info(
                     "Guild context (%s) — blocked %d tool(s), %d remain",
-                    source.chat_type, len(GUILD_BLOCKED_TOOLS), len(agent.tools),
+                    source.chat_type, len(GUILD_BLOCKED_TOOLS),
+                    len(agent.tools) if hasattr(agent, "tools") else 0,
                 )
 
                 # Redirect memory to guild-scoped directory so personal
