@@ -674,6 +674,7 @@ class DiscordAdapter(BasePlatformAdapter):
                     message_id = payload.message_id
 
                     from hermes_cli.config import get_hermes_home as _get_home
+                    from gateway.periodic_check_state import get_ambient_message, suppress_channel
                     import json as _json
 
                     # Check if this message was sent by us (any bot message, not just ambient)
@@ -691,10 +692,7 @@ class DiscordAdapter(BasePlatformAdapter):
                     # Check if it was specifically an ambient-triggered message (for logging)
                     ambient_info = None
                     try:
-                        _ambient_path = _get_home() / "data" / "ambient_messages.json"
-                        if _ambient_path.exists():
-                            _ambient_msgs = _json.loads(_ambient_path.read_text())
-                            ambient_info = _ambient_msgs.get(str(message_id))
+                        ambient_info = get_ambient_message(message_id)
                     except Exception:
                         pass
 
@@ -725,10 +723,9 @@ class DiscordAdapter(BasePlatformAdapter):
                         except Exception as e:
                             logger.debug("[%s] Failed to edit message on ❌: %s", adapter_self.name, e)
 
-                        # Write suppression via the shared SuppressionManager
+                        # Write suppression via the shared periodic-check state helper.
                         try:
-                            from suppression import get_suppression_manager
-                            get_suppression_manager().suppress(
+                            suppress_channel(
                                 channel_id,
                                 reactor=str(payload.user_id),
                                 triggered_message_id=str(message_id),
