@@ -21,6 +21,9 @@ Errors in hooks are caught and logged but never block the main pipeline.
 
 import asyncio
 import importlib.util
+import re
+import sys
+import types
 from typing import Any, Callable, Dict, List, Optional
 
 import yaml
@@ -66,6 +69,39 @@ class HookRegistry:
         except Exception as e:
             print(f"[hooks] Could not load built-in boot-md hook: {e}", flush=True)
 
+    def _load_handler_module(self, hook_name: str, hook_dir, handler_path):
+        """Load handler.py as part of a package so sibling imports work.
+
+        Hook handlers often grow helper modules over time. Loading the handler
+        under a synthetic package gives ``from .models import ...`` and similar
+        relative imports the same semantics they would have in a normal package.
+        """
+        safe_name = re.sub(r"\W+", "_", str(hook_name)).strip("_") or hook_dir.name
+        package_root = "hermes_user_hooks"
+        package_name = f"{package_root}.{safe_name}"
+        module_name = f"{package_name}.handler"
+
+        root_module = sys.modules.get(package_root)
+        if root_module is None:
+            root_module = types.ModuleType(package_root)
+            root_module.__path__ = []  # type: ignore[attr-defined]
+            sys.modules[package_root] = root_module
+
+        package_module = types.ModuleType(package_name)
+        package_module.__file__ = str(hook_dir / "__init__.py")
+        package_module.__path__ = [str(hook_dir)]  # type: ignore[attr-defined]
+        package_module.__package__ = package_name
+        sys.modules[package_name] = package_module
+
+        spec = importlib.util.spec_from_file_location(module_name, handler_path)
+        if spec is None or spec.loader is None:
+            return None
+
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[module_name] = module
+        spec.loader.exec_module(module)
+        return module
+
     def discover_and_load(self) -> None:
         """
         Scan the hooks directory for hook directories and load their handlers.
@@ -103,16 +139,10 @@ class HookRegistry:
                     print(f"[hooks] Skipping {hook_name}: no events declared", flush=True)
                     continue
 
-                # Dynamically load the handler module
-                spec = importlib.util.spec_from_file_location(
-                    f"hermes_hook_{hook_name}", handler_path
-                )
-                if spec is None or spec.loader is None:
+                module = self._load_handler_module(hook_name, hook_dir, handler_path)
+                if module is None:
                     print(f"[hooks] Skipping {hook_name}: could not load handler.py", flush=True)
                     continue
-
-                module = importlib.util.module_from_spec(spec)
-                spec.loader.exec_module(module)
 
                 handle_fn = getattr(module, "handle", None)
                 if handle_fn is None:

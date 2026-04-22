@@ -47,6 +47,25 @@ class TestDiscoverAndLoad:
         assert reg.loaded_hooks[0]["name"] == "my-hook"
         assert "agent:start" in reg.loaded_hooks[0]["events"]
 
+    def test_loads_hook_with_relative_import(self, tmp_path):
+        hook_dir = _create_hook(
+            tmp_path,
+            "relative-hook",
+            '["agent:start"]',
+            "from .helper import VALUE\n"
+            "def handle(event_type, context):\n"
+            "    context['value'] = VALUE\n",
+        )
+        (hook_dir / "helper.py").write_text("VALUE = 42\n")
+
+        reg = HookRegistry()
+        with patch("gateway.hooks.HOOKS_DIR", tmp_path), _patch_no_builtins(reg):
+            reg.discover_and_load()
+
+        assert len(reg.loaded_hooks) == 1
+        handler_fn = reg._handlers["agent:start"][0]
+        assert handler_fn.__globals__["VALUE"] == 42
+
     def test_skips_missing_hook_yaml(self, tmp_path):
         hook_dir = tmp_path / "bad-hook"
         hook_dir.mkdir()
