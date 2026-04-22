@@ -606,8 +606,6 @@ class DiscordAdapter(BasePlatformAdapter):
 
             @self._client.event
             async def on_message_edit(before: DiscordMessage, after: DiscordMessage):
-                if after.author == self._client.user:
-                    return
                 if after.type not in (discord.MessageType.default, discord.MessageType.reply):
                     return
                 try:
