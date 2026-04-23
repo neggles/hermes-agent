@@ -24,7 +24,7 @@ from typing import Any, Callable, Optional, Tuple
 
 import discord
 from discord import Intents
-from discord import Message as DiscordMessage
+from discord import Message as DiscordMessage, Emoji
 from discord.ext import commands
 
 from gateway.config import Platform, PlatformConfig
@@ -973,6 +973,33 @@ class DiscordAdapter(BasePlatformAdapter):
         except (ValueError, discord.DiscordException):
             return None
 
+    _emoji_map: dict[str, Emoji] | None = None
+    _emoji_map_size: int = -1
+
+    def _restore_custom_emojis(self, text: str) -> str:
+        """Reverse custom emoji normalization: :name: → <:name:id>.
+
+        The inbound path strips IDs for readability; this restores them so
+        Discord renders the emoji. Only matches :word: that correspond to an
+        actual custom emoji the bot can see.
+        """
+        if not self._client or not self._client.emojis:
+            return text
+        # Cache the emoji name→object map; rebuild only when the count changes
+        # (new emoji added/removed from guilds the bot can see).
+        current_size = len(self._client.emojis)
+        if self._emoji_map is None or current_size != self._emoji_map_size:
+            self._emoji_map = {e.name: e for e in self._client.emojis}
+            self._emoji_map_size = current_size
+        emoji_map = self._emoji_map
+        def _restore(m: re.Match) -> str:
+            name = m.group(1)
+            e = emoji_map.get(name)
+            if e:
+                return f"<{'a' if e.animated else ''}:{e.name}:{e.id}>"
+            return m.group(0)
+        return re.sub(r"\b:(\w+):\b", _restore, text)
+
     async def send(
         self,
         chat_id: str,
@@ -990,19 +1017,7 @@ class DiscordAdapter(BasePlatformAdapter):
             return SendResult(success=False, error=f"Could not resolve channel {chat_id}")
 
         try:
-            # Reverse custom emoji normalization: :name: → <:name:id>
-            # The inbound path strips IDs for readability; restore them so
-            # Discord renders the emoji. Only matches :word: that correspond
-            # to an actual custom emoji the bot can see.
-            if self._client.emojis:
-                emoji_map = {e.name: e for e in self._client.emojis}
-                def _restore_emoji(m: re.Match) -> str:
-                    name = m.group(1)
-                    e = emoji_map.get(name)
-                    if e:
-                        return f"<{'a' if e.animated else ''}:{e.name}:{e.id}>"
-                    return m.group(0)  # not a custom emoji, leave as-is
-                content = re.sub(r":(\w+):", _restore_emoji, content)
+            content = self._restore_custom_emojis(content)
 
             # Resolve @username mentions → <@id> so Discord renders them as pings.
             # Matches @word patterns that aren't already Discord mention syntax.
@@ -1081,6 +1096,7 @@ class DiscordAdapter(BasePlatformAdapter):
         if not self._client:
             return SendResult(success=False, error="Not connected")
         try:
+            content = self._restore_custom_emojis(content)
             channel = self._client.get_channel(int(chat_id))
             if not channel:
                 channel = await self._client.fetch_channel(int(chat_id))
