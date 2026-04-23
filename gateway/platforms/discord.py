@@ -604,10 +604,41 @@ class DiscordAdapter(BasePlatformAdapter):
 
                 await self._handle_message(message)
 
+            # Debounce self-edits so streaming doesn't hammer the archive DB.
+            # Each intermediate edit cancels the previous pending archive task;
+            # only the final edit (after the debounce window) actually writes.
+            _self_edit_pending: dict[int, asyncio.Task] = {}
+            _SELF_EDIT_DEBOUNCE = 2.0  # seconds
+
             @self._client.event
             async def on_message_edit(before: DiscordMessage, after: DiscordMessage):
                 if after.type not in (discord.MessageType.default, discord.MessageType.reply):
                     return
+
+                # For self-edits, debounce to avoid rapid-fire DB writes during streaming
+                if after.author == self._client.user:
+                    msg_id = after.id
+                    # Cancel any pending archive for this message
+                    prev = _self_edit_pending.pop(msg_id, None)
+                    if prev and not prev.done():
+                        prev.cancel()
+
+                    async def _deferred_archive(b: DiscordMessage, a: DiscordMessage, mid: int):
+                        try:
+                            await asyncio.sleep(_SELF_EDIT_DEBOUNCE)
+                            await adapter_self._archive_service.archive_message_edit(b, a)
+                        except asyncio.CancelledError:
+                            pass
+                        except Exception as e:
+                            logger.debug("[%s] Discord archive edit hook failed: %s", adapter_self.name, e)
+                        finally:
+                            _self_edit_pending.pop(mid, None)
+
+                    _self_edit_pending[msg_id] = asyncio.create_task(
+                        _deferred_archive(before, after, msg_id)
+                    )
+                    return
+
                 try:
                     await adapter_self._archive_service.archive_message_edit(before, after)
                 except Exception as e:  # pragma: no cover - defensive logging
